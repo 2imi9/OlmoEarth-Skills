@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.local
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+*.swp
+.idea/
+.vscode/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Test / data outputs
+data/
+out/
+cache/
+*.tif
+*.tar
+*.zip
+*.parquet
+
+# Claude / agent local state
+.claude/
