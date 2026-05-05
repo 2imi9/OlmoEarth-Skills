@@ -51,16 +51,22 @@ python scripts/fetch_aoi.py --huc12 020503060101 --out huc.geojson
 
 `scripts/write_config.py` emits everything Studio and rslearn need:
 
-- `config.json` — rslearn dataset config with the canonical 3-bandset Sentinel-2 template
+- `config.json` — rslearn dataset config. Two layouts via `--config-style`:
+  - `awf` (default): 3 zoom-offset band_sets, single `sentinel2` layer, mirrors the AWF tutorial. Best for tutorial-driven fine-tuning.
+  - `production`: 12 per-month layers (`sentinel2_l2a_mo01..mo12`) with `alias: sentinel2_l2a` + per-layer `time_offset`, vector label. Verified structurally identical to `olmoearth_projects/olmoearth_run_data/sample/dataset.json` — what `olmoearth_run` actually consumes.
 - `import.geojson` AND `import.json` — Studio import file in both extensions, because `.geojson` gets MIME-rejected as `application/octet-stream` on Windows browsers
 - `shards/region_NN.{geojson,json}` — auto-split if record count > 10,000 (Studio's 1-hour upload limit), partitioned by longitude so each shard is geographically coherent
 - `finetune.yaml` — Lightning fine-tune config (only with `--finetune`)
 
 ```bash
+# AWF-tutorial style (default)
 python scripts/write_config.py labels.geojson out/ --finetune --num-classes 9
+
+# Production / olmoearth_run style
+python scripts/write_config.py labels.geojson out/ --config-style production
 ```
 
-See [`references/rslearn_config.md`](references/rslearn_config.md) for the canonical config and the knobs that matter (PC vs E84 cloud-cover sort key, `zoom_offset`, `PER_PERIOD_MOSAIC`, etc.).
+See [`references/rslearn_config.md`](references/rslearn_config.md) for both layouts and the knobs that matter (PC vs E84 cloud-cover sort key, `zoom_offset` for AWF, `alias` + `time_offset` for production).
 
 ### 4. Audit against the 7 OE quality criteria
 

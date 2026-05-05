@@ -3,14 +3,24 @@ write_config.py — Emit OlmoEarth-ready output files from a labels GeoJSON.
 
 Outputs (in --out-dir):
 
-- config.json                            rslearn dataset config (3-bandset S2)
+- config.json                            rslearn dataset config (style configurable)
 - import.geojson + import.json           Studio import file (dual extension; Windows MIME)
 - shards/region_NN.{geojson,json}        auto-split if > --max-per-shard records
 - finetune.yaml                          Lightning fine-tune config (only with --finetune)
 
+Two ``--config-style`` choices for ``config.json``:
+
+- ``awf`` (default): three zoom-offset band_sets, single sentinel2 layer with
+  ``query_config.PER_PERIOD_MOSAIC``. Mirrors the AWF tutorial cell 9.
+- ``production``: twelve per-month layers (sentinel2_l2a_mo01..mo12) with
+  ``alias: sentinel2_l2a`` + ``time_offset`` per layer, vector label layer.
+  Matches ``allenai/olmoearth_projects:olmoearth_run_data/sample/dataset.json``
+  — what ``olmoearth_run`` actually consumes.
+
 Usage:
     python write_config.py labels.geojson out/
-    python write_config.py labels.geojson out/ --source pc --finetune --num-classes 9
+    python write_config.py labels.geojson out/ --config-style production
+    python write_config.py labels.geojson out/ --finetune --num-classes 9
 
 Stdlib only.
 """
@@ -23,12 +33,24 @@ import shutil
 from pathlib import Path
 
 
+# Production layer band order, verified against
+# allenai/olmoearth_projects:olmoearth_run_data/sample/dataset.json.
+# All 12 bands in one band_set (no zoom_offset split), alphabetical with B8A at end.
+PRODUCTION_S2_BANDS = [
+    "B01", "B02", "B03", "B04", "B05", "B06", "B07", "B08",
+    "B09", "B11", "B12", "B8A",
+]
+
+
 def make_rslearn_config(source: str = "pc", harmonize: bool = True) -> dict:
-    """Return the canonical 3-bandset Sentinel-2 rslearn config.
+    """Return the AWF-tutorial-style 3-bandset Sentinel-2 rslearn config.
 
     Mirrors cell 9 of the AWF tutorial verbatim, with the cloud-cover sort key
     adjusted for the chosen data source (Planetary Computer uses
     ``eo:cloud_cover``; Element-84 Earth Search uses ``properties.eo:cloud_cover``).
+
+    For the production layout (12 per-month layers with alias + time_offset)
+    used by ``olmoearth_run``, see ``make_production_rslearn_config`` instead.
     """
     if source == "pc":
         class_path = "rslearn.data_sources.planetary_computer.Sentinel2"
@@ -80,6 +102,58 @@ def make_rslearn_config(source: str = "pc", harmonize: bool = True) -> dict:
             },
         }
     }
+
+
+def make_production_rslearn_config(
+    source: str = "pc",
+    harmonize: bool = True,
+    n_months: int = 12,
+    period_duration_days: int = 30,
+) -> dict:
+    """Return the production rslearn dataset config used by ``olmoearth_run``.
+
+    Layout: one layer per month (``sentinel2_l2a_mo01..mo<n_months>``), each
+    aliased to ``sentinel2_l2a`` so the model sees a single concatenated input.
+    Time offsets are spread around 0d in ``period_duration_days`` steps (the
+    default 12-month / 30-day layout produces -180d, -150d, ..., +150d).
+
+    Verified structurally against
+    ``allenai/olmoearth_projects:olmoearth_run_data/sample/dataset.json``.
+    """
+    if source == "pc":
+        ds_name = "rslearn.data_sources.planetary_computer.Sentinel2"
+        cache = "cache/planetary_computer"
+        sort_by = "eo:cloud_cover"
+    elif source == "e84":
+        ds_name = "rslearn.data_sources.earth_search.Sentinel2"
+        cache = "cache/earth_search"
+        sort_by = "properties.eo:cloud_cover"
+    else:
+        raise ValueError(f"unknown source {source!r} (use 'pc' or 'e84')")
+
+    half = (n_months // 2) * period_duration_days
+    offsets = [-half + i * period_duration_days for i in range(n_months)]
+
+    layers: dict = {"label": {"type": "vector"}}
+    for i, offset_days in enumerate(offsets, start=1):
+        layers[f"sentinel2_l2a_mo{i:02d}"] = {
+            "alias": "sentinel2_l2a",
+            "band_sets": [
+                {"bands": list(PRODUCTION_S2_BANDS), "dtype": "uint16"}
+            ],
+            "data_source": {
+                "cache_dir": cache,
+                "duration": f"{period_duration_days}d",
+                "harmonize": harmonize,
+                "ingest": False,
+                "name": ds_name,
+                "sort_by": sort_by,
+                "time_offset": f"{offset_days}d",
+            },
+            "type": "raster",
+        }
+
+    return {"layers": layers}
 
 
 def write_studio_import(features: list[dict], out_dir: Path, name: str = "import"):
@@ -236,6 +310,24 @@ def main():
         help="S2 data source: 'pc' (Planetary Computer) or 'e84' (Element-84 Earth Search)",
     )
     parser.add_argument(
+        "--config-style",
+        default="awf",
+        choices=["awf", "production"],
+        help=(
+            "rslearn config layout. 'awf' (default): 3 zoom-offset band_sets, "
+            "single sentinel2 layer w/ query_config.PER_PERIOD_MOSAIC — mirrors "
+            "the AWF tutorial. 'production': 12 per-month layers (mo01..mo12) "
+            "with alias='sentinel2_l2a' + time_offset, vector label layer — "
+            "matches olmoearth_run's sample/dataset.json."
+        ),
+    )
+    parser.add_argument(
+        "--n-months",
+        type=int,
+        default=12,
+        help="Months of imagery (production style only; default 12)",
+    )
+    parser.add_argument(
         "--max-per-shard",
         type=int,
         default=10000,
@@ -264,9 +356,17 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. rslearn config
-    config = make_rslearn_config(source=args.source)
+    if args.config_style == "production":
+        config = make_production_rslearn_config(
+            source=args.source, n_months=args.n_months
+        )
+    else:
+        config = make_rslearn_config(source=args.source)
     (out_dir / "config.json").write_text(json.dumps(config, indent=2))
-    print(f"Wrote {out_dir / 'config.json'} (source={args.source})")
+    print(
+        f"Wrote {out_dir / 'config.json'} "
+        f"(source={args.source}, style={args.config_style})"
+    )
 
     # 2. Studio import (dual extension, auto-split if oversized)
     with open(args.input, encoding="utf-8") as f:
