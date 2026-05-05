@@ -2,21 +2,28 @@
 
 Each one cost real debugging time across the Karst / Chesapeake / Potomac case studies. The skill prevents each procedurally; this doc explains why each one breaks so the skill's defaults are easy to override correctly.
 
-## 1. Wrong field names (and confusing the THREE valid schemas)
+## 1. Wrong field names (and the es_label → oe_labels rename trap)
 
-**Symptom**: Studio import fails silently. Or olmoearth_run's `prepare_labeled_windows` reads no labels. Or rslearn `add_windows` runs without error but every label loads as nodata.
+**Symptom**: Studio import fails silently. Or `olmoearth_run prepare_labeled_windows` reads no labels and emits empty windows. Or rslearn `add_windows` runs without error but every label loads as nodata.
 
 **Root cause**: There are **three verified schemas** that look similar but are not interchangeable, each tied to a different point in the pipeline:
 
-- **Studio import** (verified against `OlmoEarth_sample_file.geojson`): the class label lives at `properties.sample_category`. Project metadata follows the `sample_*` prefix; framework fields are `task_name` and `observation_time`. Used when you upload raw labels TO Studio.
-- **Studio export** (verified against `olmoearth_projects/olmoearth_run_data/sample/annotation_features.geojson`): the class label lives at `properties.es_label` (integer index). Companion fields `es_start_time`, `es_end_time`, `es_annotations_task_id`. **This is what `olmoearth_run` consumes** — its `LabeledWindowPreparer` classes read these fields directly.
-- **rslearn / AWF tutorial** (verified against the AWF tutorial cell that reads labels): the class label lives at `properties.oe_labels.category`. Older / alternate format.
+- **Studio import** (verified against `OlmoEarth_sample_file.geojson`): class label at `properties.sample_category`. Project metadata follows the `sample_*` prefix; framework fields are `task_name` and `observation_time`. Used when you upload raw labels TO Studio.
+- **Studio export raw** (verified against `olmoearth_projects/olmoearth_run_data/sample/annotation_features.geojson`): class label at `properties.es_label` (integer). Companion fields `es_start_time`, `es_end_time`, `es_annotations_task_id`. **This is the raw Studio export — NOT what `olmoearth_run` actually reads**. It needs to be renamed before `prepare_labeled_windows` will pick it up.
+- **Production / rslearn standard** (verified against `oer_annotation_creation.py` line 565 — `"oe_labels": labels` — and `sample/olmoearth_run.yaml` — `label_property: "category"`): class label at `properties.oe_labels.{key}` where `{key}` matches `label_property` (typically `category`). **This is what `olmoearth_run`'s `LabeledWindowPreparer` actually reads.** Also what the AWF tutorial uses.
 
-The wrong names are `tag`, `label`, `class`, top-level `category` (no prefix), or nesting things outside `properties`. All of those look plausible and ship silently.
+The wrong names are `tag`, `label`, `class`, top-level `category` (no prefix), or nesting things outside `properties`. All look plausible and ship silently.
 
-**Fix**: `scripts/audit.py` accepts all three verified schemas and tells you which one it found. Match the schema to your destination — Studio upload uses #1, olmoearth_run consumes #2, the rslearn AWF flow uses #3. `scripts/write_config.py` passes the user's input through, so start from a verified sample structure and you won't drift.
+**The classic trap**: a user exports from Studio (gets schema #2 with `es_label`), drops it into their `olmoearth_run_data/<project>/` directory, and runs `prepare_labeled_windows`. The script doesn't error — it just reads zero labels because `label_property: "category"` looks for `properties.oe_labels.category`, not `properties.es_label`. The user gets empty windows and spends hours debugging.
 
-**Reference cases**: Karst classification (~144K → 47K rebalanced) hit this on the import side. The audit also caught the same class of bug on the export side when first run against the official olmoearth_run sample (`es_label` wasn't recognized until the skill was patched).
+**Fix**:
+
+- `scripts/audit.py` accepts all three verified schemas and reports which one it found.
+- If your file is the raw Studio export (`es_*`), rename to `oe_labels.{key}` before `prepare_labeled_windows`. Two options:
+  - Run `olmoearth_projects/scripts/oer_annotation_creation.py` on your source GIS data — it writes the production schema directly.
+  - For an existing Studio export, a 5-line `jq` or Python pass: `es_label → oe_labels.<label_property>`, `es_start_time → oe_start_time`, `es_end_time → oe_end_time`, `es_annotations_task_id → oe_annotations_task_id`. Zero-index integer labels if your project's class IDs start at 1.
+
+**Reference cases**: Karst classification (~144K → 47K rebalanced) hit this on the import side. Iteration-2 of this skill exposed the export-side variant — the skill initially claimed `olmoearth_run` reads `es_label` directly; verifying against `oer_annotation_creation.py` line 565 and `sample/olmoearth_run.yaml`'s `label_property: "category"` showed the rename to `oe_labels.{key}` is required.
 
 ## 2. Bbox AOIs instead of real watersheds
 

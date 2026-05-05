@@ -30,8 +30,8 @@ Run these in order. Each step has a script, a reference doc, or both.
 Labels must use OlmoEarth's literal field names. There are **three verified schemas** that are not interchangeable:
 
 - **Studio import** (what you upload to Studio): `properties.sample_category` for the class label, plus `properties.task_name` and `properties.observation_time` framework fields and `sample_*`-prefixed project metadata.
-- **Studio export** (what Studio writes for the olmoearth_run labeled-window-preparer pipeline): `properties.es_label` (integer class index), plus `es_start_time`, `es_end_time`, `es_annotations_task_id`. **This is the production path** — what real projects in `olmoearth_projects/olmoearth_run_data/` use.
-- **rslearn / AWF tutorial** (older direct-fine-tune flow): `properties.oe_labels.category`.
+- **Studio export raw** (what Studio's "Export Annotations" tab writes): `properties.es_label` (integer class index), plus `es_start_time`, `es_end_time`, `es_annotations_task_id`. **NOT directly consumable by `olmoearth_run`** — rename to schema #3 first via `olmoearth_projects/scripts/oer_annotation_creation.py` or a 5-line `jq` mapping (`es_label → oe_labels.<label_property>`, `es_start_time → oe_start_time`, etc.).
+- **Production / rslearn standard** (what `olmoearth_run` actually reads, also what the AWF tutorial uses): `properties.oe_labels.{key}` where `{key}` matches `label_property` in `olmoearth_run.yaml` (typically `category`). Verified against `oer_annotation_creation.py` line 565 (`"oe_labels": labels`) and `sample/olmoearth_run.yaml` (`label_property: "category"`).
 
 Mixing them is pitfall #1 and a frequent cause of silent Studio rejection or label-loading failures. See [`references/schema.md`](references/schema.md) for full details and anti-patterns.
 
@@ -81,7 +81,7 @@ The audit prints a `[PASS]` / `[WARN]` / `[FAIL]` line per criterion and exits n
 From [docs.olmoearth.allenai.org/training-data-considerations](https://docs.olmoearth.allenai.org/training-data-considerations). The audit script checks each:
 
 1. **Volume** — more is better, within reason. Warn under 200 samples; fail under 50.
-2. **Schema** — exactly one of `properties.sample_category` (Studio import), `properties.es_label` (Studio export / production), or `properties.oe_labels.category` (rslearn / AWF) present on every feature.
+2. **Schema** — one of `properties.sample_category` (Studio import), `properties.es_label` (Studio export raw — requires rename for olmoearth_run), or `properties.oe_labels.{key}` (production / rslearn standard — what olmoearth_run consumes) present on every feature.
 3. **Class distribution** — categories should be roughly balanced; equal-frequency binning is preferred over quantile.
 4. **Per-class volume** — every class needs enough samples; warn under 30 per class, fail under 10.
 5. **Negative / non-target class** — required to prevent false positives.
@@ -94,7 +94,7 @@ Each one cost a debugging session in the Karst, Chesapeake, or Potomac case stud
 
 | # | Pitfall | How this skill prevents it |
 |---|---------|----------------------------|
-| 1 | Wrong field names — using `tag` / `label` / `class` / top-level `category`, or confusing the three valid schemas (`sample_category` / `es_label` / `oe_labels.category`) | `audit.py` accepts all three verified schemas and reports which it found |
+| 1 | Wrong field names (`tag` / `label` / `class` / top-level `category`), confusing the three valid schemas (`sample_category` / `es_label` / `oe_labels.{key}`), OR forgetting to rename `es_*` → `oe_labels.{key}` before `olmoearth_run prepare_labeled_windows` | `audit.py` reports which schema it found; rename via `oer_annotation_creation.py` if you have a raw Studio export |
 | 2 | Bbox AOIs instead of real watersheds | `fetch_aoi.py` (NLDI basin + WBD HUC-12) |
 | 3 | Studio range-locking when uploading multiple metrics | `write_config.py` emits one import file per metric |
 | 4 | `.geojson` rejected as `application/octet-stream` on Windows | `write_config.py` always emits both `.geojson` and `.json` |
