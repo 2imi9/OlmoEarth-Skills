@@ -1,9 +1,10 @@
 """
 audit.py — Run the 7 OE quality criteria against a labels GeoJSON.
 
-Supports both verified schemas:
-- Studio import:  properties.sample_category
-- rslearn export: properties.oe_labels.category
+Supports all three verified schemas:
+- Studio import: properties.sample_category   (what you upload to Studio)
+- Studio export: properties.es_label          (what Studio writes for olmoearth_run)
+- rslearn / AWF: properties.oe_labels.category (older fine-tune flow)
 
 Usage:
     python audit.py path/to/labels.geojson
@@ -50,14 +51,19 @@ def _load_geojson(path: Path) -> list[dict]:
 
 
 def _get_label(feature: dict):
-    """Pull the class label, supporting both verified schemas.
+    """Pull the class label, supporting all 3 verified schemas.
 
-    Studio import uses ``properties.sample_category``; rslearn export uses
-    ``properties.oe_labels.category``. Returns whichever is present, or None.
+    - Studio import: ``properties.sample_category``
+    - Studio export: ``properties.es_label``
+    - rslearn / AWF: ``properties.oe_labels.category``
+
+    Returns whichever is present (in that priority order), or None.
     """
     props = feature.get("properties") or {}
-    if "sample_category" in props and props["sample_category"] is not None:
+    if props.get("sample_category") is not None:
         return props["sample_category"]
+    if props.get("es_label") is not None:
+        return props["es_label"]
     oe_labels = props.get("oe_labels")
     if isinstance(oe_labels, dict) and oe_labels.get("category") is not None:
         return oe_labels["category"]
@@ -65,22 +71,33 @@ def _get_label(feature: dict):
 
 
 def _detect_schema(features: list[dict]) -> tuple[str | None, int]:
-    """Return ('studio', count) or ('rslearn', count) based on which label
-    field is most common, or (None, 0) if neither is present."""
-    studio = sum(
+    """Return (schema_name, count) for the most-populated of the three verified
+    schemas, or (None, 0) if no recognized label field is present.
+
+    Schema names: 'studio_import' | 'studio_export' | 'rslearn'.
+    """
+    studio_import = sum(
         1 for f in features
         if (f.get("properties") or {}).get("sample_category") is not None
+    )
+    studio_export = sum(
+        1 for f in features
+        if (f.get("properties") or {}).get("es_label") is not None
     )
     rslearn = sum(
         1 for f in features
         if isinstance((f.get("properties") or {}).get("oe_labels"), dict)
         and (f["properties"]["oe_labels"]).get("category") is not None
     )
-    if studio == 0 and rslearn == 0:
+    counts = {
+        "studio_import": studio_import,
+        "studio_export": studio_export,
+        "rslearn": rslearn,
+    }
+    best = max(counts, key=counts.get)
+    if counts[best] == 0:
         return None, 0
-    if studio >= rslearn:
-        return "studio", studio
-    return "rslearn", rslearn
+    return best, counts[best]
 
 
 def _coords(feature: dict):
@@ -138,9 +155,14 @@ def check_schema(features):
         return (
             "FAIL",
             "no recognized label field — expected properties.sample_category "
-            "(Studio import) or properties.oe_labels.category (rslearn export)",
+            "(Studio import), properties.es_label (Studio export), or "
+            "properties.oe_labels.category (rslearn / AWF)",
         )
-    field = "sample_category" if schema == "studio" else "oe_labels.category"
+    field = {
+        "studio_import": "sample_category",
+        "studio_export": "es_label",
+        "rslearn": "oe_labels.category",
+    }[schema]
     missing = sum(1 for f in features if _get_label(f) is None)
     if missing > 0:
         return (
@@ -253,7 +275,7 @@ def check_polygon_cleanliness(features):
 
 CHECKS = [
     ("Volume", check_volume),
-    ("Schema (sample_category or oe_labels.category)", check_schema),
+    ("Schema (sample_category / es_label / oe_labels.category)", check_schema),
     ("Class distribution", check_class_distribution),
     ("Per-class volume", check_per_class_volume),
     ("Negative class", check_negative_class),

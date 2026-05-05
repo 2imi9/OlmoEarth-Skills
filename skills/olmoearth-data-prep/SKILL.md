@@ -1,6 +1,6 @@
 ---
 name: olmoearth-data-prep
-description: Convert raw geospatial labels (CSV / GeoJSON / Shapefile / station tables) into OlmoEarth-ready datasets that pass Studio import and avoid the 8 known prep pitfalls. Use whenever the user is preparing labels for OlmoEarth, building an rslearn dataset config, uploading to OlmoEarth Studio or Roger Studio, fetching real watershed AOIs (NLDI / NHD / HUC), splitting train/val for an EO model, troubleshooting Studio import errors (wrong field names, MIME-type rejection, 1-hour timeout), or asking about equal-frequency binning, spatial cross-validation, negative-class generation, or class imbalance for OlmoEarth fine-tuning. Trigger even when "OlmoEarth" isn't said explicitly — rslearn dataset configs, Sentinel-2 windows, Planetary Computer queries, oe_labels schema questions, or watershed-vs-bbox decisions in an EO/labeling context all warrant this skill.
+description: Convert raw geospatial labels (CSV / GeoJSON / Shapefile / station tables) into OlmoEarth-ready datasets that pass Studio import and avoid the 8 known prep pitfalls. Use whenever the user is preparing labels for OlmoEarth, building an rslearn dataset config, uploading to OlmoEarth Studio or Roger Studio, exporting Studio annotations for olmoearth_run, fetching real watershed AOIs (NLDI / NHD / HUC), splitting train/val for an EO model, troubleshooting Studio import errors (wrong field names, MIME-type rejection, 1-hour timeout), or asking about equal-frequency binning, spatial cross-validation, negative-class generation, or class imbalance for OlmoEarth fine-tuning. Trigger even when "OlmoEarth" isn't said explicitly — rslearn dataset configs, Sentinel-2 windows, Planetary Computer queries, sample_category / es_label / oe_labels schema questions, or watershed-vs-bbox decisions in an EO/labeling context all warrant this skill.
 ---
 
 # OlmoEarth Data Prep
@@ -27,12 +27,13 @@ Run these in order. Each step has a script, a reference doc, or both.
 
 ### 1. Validate schema
 
-Labels must use OlmoEarth Studio's literal field names. There are two verified schemas:
+Labels must use OlmoEarth's literal field names. There are **three verified schemas** that are not interchangeable:
 
-- **Studio import** (what you upload to Studio): `properties.sample_category` for the class label, `properties.task_name` and `properties.observation_time` for framework fields, `sample_*`-prefixed fields for project metadata.
-- **rslearn export** (what Studio writes for rslearn fine-tuning): `properties.oe_labels.category`.
+- **Studio import** (what you upload to Studio): `properties.sample_category` for the class label, plus `properties.task_name` and `properties.observation_time` framework fields and `sample_*`-prefixed project metadata.
+- **Studio export** (what Studio writes for the olmoearth_run labeled-window-preparer pipeline): `properties.es_label` (integer class index), plus `es_start_time`, `es_end_time`, `es_annotations_task_id`. **This is the production path** — what real projects in `olmoearth_projects/olmoearth_run_data/` use.
+- **rslearn / AWF tutorial** (older direct-fine-tune flow): `properties.oe_labels.category`.
 
-Mixing the two is pitfall #1 and a frequent cause of silent Studio rejection. See [`references/schema.md`](references/schema.md) for full details and anti-patterns.
+Mixing them is pitfall #1 and a frequent cause of silent Studio rejection or label-loading failures. See [`references/schema.md`](references/schema.md) for full details and anti-patterns.
 
 ### 2. Attach real AOIs (don't use bboxes)
 
@@ -74,7 +75,7 @@ The audit prints a `[PASS]` / `[WARN]` / `[FAIL]` line per criterion and exits n
 From [docs.olmoearth.allenai.org/training-data-considerations](https://docs.olmoearth.allenai.org/training-data-considerations). The audit script checks each:
 
 1. **Volume** — more is better, within reason. Warn under 200 samples; fail under 50.
-2. **Schema** — `properties.sample_category` (Studio import) or `properties.oe_labels.category` (rslearn export) present on every feature.
+2. **Schema** — exactly one of `properties.sample_category` (Studio import), `properties.es_label` (Studio export / production), or `properties.oe_labels.category` (rslearn / AWF) present on every feature.
 3. **Class distribution** — categories should be roughly balanced; equal-frequency binning is preferred over quantile.
 4. **Per-class volume** — every class needs enough samples; warn under 30 per class, fail under 10.
 5. **Negative / non-target class** — required to prevent false positives.
@@ -87,7 +88,7 @@ Each one cost a debugging session in the Karst, Chesapeake, or Potomac case stud
 
 | # | Pitfall | How this skill prevents it |
 |---|---------|----------------------------|
-| 1 | Wrong Studio field names (`tag` / `label` / `class` instead of `sample_category` for Studio import or `oe_labels.category` for rslearn export) | `audit.py` accepts both verified schemas and reports which it found |
+| 1 | Wrong field names — using `tag` / `label` / `class` / top-level `category`, or confusing the three valid schemas (`sample_category` / `es_label` / `oe_labels.category`) | `audit.py` accepts all three verified schemas and reports which it found |
 | 2 | Bbox AOIs instead of real watersheds | `fetch_aoi.py` (NLDI basin + WBD HUC-12) |
 | 3 | Studio range-locking when uploading multiple metrics | `write_config.py` emits one import file per metric |
 | 4 | `.geojson` rejected as `application/octet-stream` on Windows | `write_config.py` always emits both `.geojson` and `.json` |
